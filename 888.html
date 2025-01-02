@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Photo Editor Platform</title>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            background-color: #2b2b2b;
+            color: #fff;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        h1 {
+            margin-top: 20px;
+        }
+
+        #image-canvas {
+            border: 1px solid #555;
+            margin: 20px;
+        }
+
+        #controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        button {
+            background-color: #444;
+            color: #fff;
+            border: none;
+            padding: 10px 15px;
+            cursor: pointer;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        button:hover {
+            background-color: #666;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        label {
+            background-color: #444;
+            color: #fff;
+            border: none;
+            padding: 10px 15px;
+            cursor: pointer;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        #selection {
+            position: absolute;
+            border: 2px dashed #00ff00;
+            background-color: rgba(0, 255, 0, 0.2);
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>超級照片編輯平台</h1>
+    <p id="welcome-message">歡迎使用相片編輯大師，將您的美照放上來的啦!!</p>
+
+    <canvas id="image-canvas" width="600" height="400"></canvas>
+
+    <div id="controls">
+        <label for="upload">選擇相片</label>
+        <input type="file" id="upload" accept="image/*">
+        <button id="crop">裁剪</button>
+        <button id="zoom-in">放大</button>
+        <button id="zoom-out">縮小</button>
+        <button id="rotate">旋轉</button>
+        <button id="grayscale">灰階</button>
+        <button id="contrast">油畫效果</button>
+        <button id="save">保存</button>
+    </div>
+
+    <div id="selection" style="display: none;"></div>
+
+    <script>
+        const canvas = document.getElementById('image-canvas');
+        const ctx = canvas.getContext('2d');
+        const selectionDiv = document.getElementById('selection');
+        const welcomeMessage = document.getElementById('welcome-message');
+        let image = new Image();
+        let originalImage = null;
+        let cropping = false;
+        let isDragging = false;
+        let cropStartX, cropStartY;
+        let cropWidth, cropHeight;
+        let scaleFactor = 1.0;
+        let contrastValue = 1.0; // 默認對比度為1
+
+        document.getElementById('upload').addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    image.src = e.target.result;
+                    image.onload = () => {
+                        canvas.width = image.width;
+                        canvas.height = image.height;
+                        ctx.drawImage(image, 0, 0);
+                        originalImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                        welcomeMessage.style.display = 'none';
+                    };
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        document.getElementById('zoom-in').addEventListener('click', () => {
+            scaleFactor += 0.1;
+            redrawImage();
+        });
+
+        document.getElementById('zoom-out').addEventListener('click', () => {
+            scaleFactor = Math.max(0.1, scaleFactor - 0.1);
+            redrawImage();
+        });
+
+        document.getElementById('rotate').addEventListener('click', () => {
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = canvas.height;
+            tempCanvas.height = canvas.width;
+            tempCtx.translate(tempCanvas.width / 2, tempCanvas.height / 2);
+            tempCtx.rotate(Math.PI / 2);
+            tempCtx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
+            canvas.width = tempCanvas.width;
+            canvas.height = tempCanvas.height;
+            ctx.drawImage(tempCanvas, 0, 0);
+        });
+
+        document.getElementById('grayscale').addEventListener('click', () => {
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            for (let i = 0; i < imageData.data.length; i += 4) {
+                const avg = (imageData.data[i] + imageData.data[i + 1] + imageData.data[i + 2]) / 3;
+                imageData.data[i] = avg;
+                imageData.data[i + 1] = avg;
+                imageData.data[i + 2] = avg;
+            }
+            ctx.putImageData(imageData, 0, 0);
+        });
+
+        // 新增對比度調整功能
+        document.getElementById('contrast').addEventListener('click', () => {
+            contrastValue = contrastValue === 1.0 ? 1.5 : 1.0; // 切換對比度
+            applyContrast();
+        });
+
+        function applyContrast() {
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const factor = (259 * (contrastValue + 255)) / (255 * (259 - contrastValue));
+            for (let i = 0; i < imageData.data.length; i += 4) {
+                imageData.data[i] = factor * (imageData.data[i] - 128) + 128; // Red
+                imageData.data[i + 1] = factor * (imageData.data[i + 1] - 128) + 128; // Green
+                imageData.data[i + 2] = factor * (imageData.data[i + 2] - 128) + 128; // Blue
+            }
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        document.getElementById('crop').addEventListener('click', () => {
+            cropping = !cropping;
+            if (cropping) {
+                // 开始裁剪
+                canvas.addEventListener('mousedown', startDrag);
+                canvas.addEventListener('mousemove', dragCrop);
+                canvas.addEventListener('mouseup', endDrag);
+            } else {
+                // 结束裁剪
+                canvas.removeEventListener('mousedown', startDrag);
+                canvas.removeEventListener('mousemove', dragCrop);
+                canvas.removeEventListener('mouseup', endDrag);
+            }
+        });
+
+        function startDrag(e) {
+            const rect = canvas.getBoundingClientRect();
+            // 获取鼠标点击的位置并转为画布坐标
+            cropStartX = (e.clientX - rect.left) / scaleFactor;
+            cropStartY = (e.clientY - rect.top) / scaleFactor;
+            isDragging = true;  // 开始拖动
+        }
+
+        function dragCrop(e) {
+            if (!isDragging) return;
+
+            const rect = canvas.getBoundingClientRect();
+            // 获取鼠标移动的坐标并转为画布坐标
+            const mouseX = (e.clientX - rect.left) / scaleFactor;
+            const mouseY = (e.clientY - rect.top) / scaleFactor;
+
+            // 计算裁剪框的宽度和高度
+            cropWidth = mouseX - cropStartX;
+            cropHeight = mouseY - cropStartY;
+
+            // 更新裁剪框的位置和大小
+            selectionDiv.style.display = 'block';
+            selectionDiv.style.left = `${Math.min(cropStartX, mouseX)}px`;
+            selectionDiv.style.top = `${Math.min(cropStartY, mouseY)}px`;
+            selectionDiv.style.width = `${Math.abs(cropWidth)}px`;
+            selectionDiv.style.height = `${Math.abs(cropHeight)}px`;
+        }
+
+        function endDrag() {
+            isDragging = false;  // 结束拖动
+            const x = Math.min(cropStartX, cropStartX + cropWidth);
+            const y = Math.min(cropStartY, cropStartY + cropHeight);
+            const width = Math.abs(cropWidth);
+            const height = Math.abs(cropHeight);
+            
+            // 执行裁剪
+            const croppedData = ctx.getImageData(x, y, width, height);
+            canvas.width = width;
+            canvas.height = height;
+            ctx.putImageData(croppedData, 0, 0);
+
+            // 隐藏裁剪框
+            selectionDiv.style.display = 'none';
+        }
+
+        document.getElementById('save').addEventListener('click', () => {
+            const link = document.createElement('a');
+            link.download = 'edited-image.png';
+            link.href = canvas.toDataURL();
+            link.click();
+        });
+
+        function redrawImage() {
+            canvas.width = originalImage.width * scaleFactor;
+            canvas.height = originalImage.height * scaleFactor;
+            ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        }
+    </script>
+</body>
+</html>
